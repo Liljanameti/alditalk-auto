@@ -319,16 +319,21 @@ const executeAutomation = async (): Promise<void> => {
   }
 };
 
+const ERROR_RETRY_SECONDS = 120;
+
 const startMainLoop = async (): Promise<void> => {
   while (true) {
+    let errored = false;
     try {
       await executeAutomation();
     } catch (error) {
       console.error('Error in automation:', error);
+      errored = true;
     }
 
-    console.log(`Waiting ${TIMEOUTS.LOOP_INTERVAL / 60} minutes before next check...`);
-    await wait(TIMEOUTS.LOOP_INTERVAL);
+    const waitSec = errored ? ERROR_RETRY_SECONDS : TIMEOUTS.LOOP_INTERVAL;
+    console.log(`Waiting ${Math.round(waitSec / 60)} minute(s) before next check...`);
+    await wait(waitSec);
   }
 };
 
