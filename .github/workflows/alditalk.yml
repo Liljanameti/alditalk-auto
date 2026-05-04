@@ -2,17 +2,24 @@ name: alditalk-extender
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    # Safety net: every 3h, in case the self-dispatch chain ever breaks.
+    # The actual cadence comes from the in-job loop + workflow_dispatch chain
+    # below (workflow_dispatch is NOT throttled like `schedule:` is).
+    - cron: "0 */3 * * *"
   workflow_dispatch:
 
 concurrency:
   group: alditalk-extender
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
@@ -39,12 +46,36 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Run one-shot automation
+      - name: Run extension loop
         env:
           RUN_ONCE: "1"
           USERNAME: ${{ secrets.ALDITALK_USERNAME }}
           PASSWORD: ${{ secrets.ALDITALK_PASSWORD }}
-        run: node dist/index.js
+        run: |
+          set -u
+          start=$(date +%s)
+          # Stay inside this job for ~5h40m, leaving buffer for the
+          # successor-dispatch step before the 6h hosted-runner ceiling.
+          deadline=$((start + 5*3600 + 40*60))
+          iter=0
+          while :; do
+            iter=$((iter + 1))
+            echo "::group::iteration $iter at $(date -u +%FT%TZ)"
+            node dist/index.js || echo "iteration $iter failed (non-fatal, continuing)"
+            echo "::endgroup::"
+            now=$(date +%s)
+            if [ "$now" -ge "$deadline" ]; then
+              echo "Deadline reached after $iter iterations; exiting loop to dispatch successor."
+              break
+            fi
+            sleep 600
+          done
+
+      - name: Dispatch successor run
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run alditalk.yml --ref ${{ github.ref_name }}
 
       - name: Upload screenshots
         if: always()
